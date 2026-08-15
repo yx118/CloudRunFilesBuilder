@@ -25,9 +25,9 @@ TEST_LUCI_MAIN_URL=$(jq -r '.assets[] | select(.name | test("luci-app-daede-*-x8
 
 
 # 固定链接
-X86_VMLINUX_BTF_URL="https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf-6.12.87-r1-x86_64.apk"
-ARM_A53_VMLINUX_BTF_URL="https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf-6.12.87-r1-aarch64_cortex-a53.apk"
-ARM_GENERIC_VMLINUX_BTF_URL="https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf-6.12.87-r1-aarch64_generic.apk"
+X86_VMLINUX_BTF_URL="https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf-6.12.94-r1-x86_64.apk"
+ARM_A53_VMLINUX_BTF_URL="https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf-6.12.94-r1-aarch64_cortex-a53.apk"
+ARM_GENERIC_VMLINUX_BTF_URL="https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf-6.12.94-r1-aarch64_generic.apk"
 
 # 正确写入 GITHUB_ENV（关键修复）
 {
