@@ -1,0 +1,121 @@
+#=================================================
+# Description: Build RunFiles using GitHub Actions for EasyTier (IPK Version)
+# License: MIT
+#=================================================
+
+name: Build EasyTier RunFile (IPK - OpenWrt 24)
+
+on:
+  schedule:
+    - cron: "10 22 * * *"  # 北京时间早上 6 点 10 分
+  workflow_dispatch:
+
+env:
+  # 在此处定义你需要的 CPU 架构，例如 x86_64, aarch64_cortex-a53 等
+  TARGET_ARCHS: "x86_64 aarch64_cortex-a53"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl wget unzip
+
+      - name: Create working directory
+        run: mkdir -p easytier-pkg-ipk
+        
+      - name: Fetch and Extract EasyTier IPK from 22.03.7 Zip
+        id: fetch_release
+        run: |
+          API_URL="https://api.github.com/repos/EasyTier/luci-app-easytier/releases/latest"
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $API_URL)
+          
+          VERSION=$(echo "$RESPONSE" | jq -r '.tag_name')
+          echo "version=$VERSION" >> $GITHUB_ENV
+          echo "获取到的最新版本: $VERSION"
+          
+          cd easytier-pkg-ipk
+          
+          # 遍历指定的架构，精准匹配包含 22.03.7 的 zip 包
+          for ARCH in $TARGET_ARCHS; do
+            echo "正在查找架构 [$ARCH] 的 22.03.7 (IPK) 压缩包..."
+            
+            # 筛选出包含目标架构且文件名包含 "22.03.7" 的 .zip 链接
+            ZIP_URL=$(echo "$RESPONSE" | jq -r ".assets[] | select((.name | contains(\"$ARCH\")) and (.name | endswith(\".zip\") and contains(\"22.03.7\"))) | .browser_download_url")
+            
+            if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
+              filename=$(basename "$ZIP_URL")
+              echo "下载压缩包: $filename"
+              wget -q "$ZIP_URL"
+              
+              echo "正在解压 $filename ..."
+              unzip -q -o "$filename"
+              rm -f "$filename" # 删除下载的压缩包
+            else
+              echo "警告: 未在最新 Release 中找到匹配架构 $ARCH 的 22.03.7 压缩包！"
+            fi
+          done
+          
+          # 清理工作目录，只保留 .ipk 文件
+          find . -type f ! -name "*.ipk" -delete
+          
+          # 检查是否成功提取到 ipk 文件
+          if ! ls *.ipk 1> /dev/null 2>&1; then
+            echo "错误: 解压后未能在目录中找到任何 .ipk 文件！"
+            exit 1
+          fi
+          
+          echo "成功提取到的 IPK 文件："
+          ls -l *.ipk
+
+      - name: Create install.sh script
+        run: |
+          cd easytier-pkg-ipk
+          cat << 'EOF' > install.sh
+          #!/bin/sh
+          echo "开始安装 EasyTier (IPK版本)..."
+          
+          if ! command -v opkg >/dev/null 2>&1; then
+              echo "错误: 当前系统未找到 opkg 包管理器！此安装包仅适用于传统 OpenWrt 固件。"
+              exit 1
+          fi
+          
+          opkg update || echo "刷新软件源失败，尝试直接安装..."
+          opkg install *.ipk || exit 1
+          
+          echo "EasyTier (IPK) 安装/更新成功！"
+          EOF
+          chmod +x install.sh
+
+      - name: Clone makeself repository
+        run: git clone https://github.com/megastep/makeself.git
+
+      - name: Build run file with makeself
+        run: |
+          mv easytier-pkg-ipk makeself/
+          cd makeself
+          ./makeself.sh easytier-pkg-ipk/ easytier-installer-ipk-${{ env.version }}.run "EasyTier IPK Auto Installer" ./install.sh
+      
+      - name: Set tag name
+        id: vars
+        run: |
+          TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
+          echo "tag_name=$TODAY" >> $GITHUB_ENV
+
+      - name: Upload run files as release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.tag_name }}
+          name: "Daily Build - ${{ env.tag_name }}"
+          files: makeself/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            <p align="left">
+             <img src="https://img.shields.io/github/downloads/${{ github.repository }}/${{ env.tag_name }}/total?style=for-the-badge&label=%E4%BB%8A%E6%97%A5%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&labelColor=blue&color=black"/>
+            </p>
+            
+            **EasyTier 插件版本**: `${{ env.version }}`
+            **适用环境**: OpenWrt 24 及更早版本 (`22.03.7` / `opkg`)
