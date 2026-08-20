@@ -15,30 +15,47 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl wget
+
       - name: Create working directory
         run: mkdir -p pushbot-pkg
         
       - name: Fetch Latest PushBot IPK Package
         id: fetch_release
         run: |
-          # 通过 GitHub API 自动获取最新 Release 中仅以 .ipk 结尾的文件
           API_URL="https://api.github.com/repos/zzsj0928/luci-app-pushbot/releases/latest"
-          DOWNLOAD_URLS=$(curl -s $API_URL | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url')
+          
+          # 获取 API 响应
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $API_URL)
+          
+          # 提取版本号用于后续命名
+          VERSION=$(echo "$RESPONSE" | jq -r '.tag_name')
+          echo "version=$VERSION" >> $GITHUB_ENV
+          echo "获取到的最新 Tag: $VERSION"
+
+          # 精准提取所有以 .ipk 结尾的直链下载地址
+          DOWNLOAD_URLS=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url')
           
           if [ -z "$DOWNLOAD_URLS" ]; then
-            echo "错误: 在最新 Release 中未找到 .ipk 文件！"
+            echo "错误: 在最新 Release 中未找到任何 .ipk 文件！"
             exit 1
           fi
 
-          # 下载所有的 .ipk 安装包（包括主程序包和可能的 i18n 语言包）
+          # 下载所有匹配的 .ipk 文件
           for url in $DOWNLOAD_URLS; do
-            echo "Downloading $url ..."
+            filename=$(basename "$url")
+            echo "正在下载: $filename"
             wget -q -P pushbot-pkg/ "$url"
           done
           
-          # 提取版本号用于后续命名
-          VERSION=$(curl -s $API_URL | jq -r '.tag_name')
-          echo "version=$VERSION" >> $GITHUB_ENV
+          # 检查是否成功下载
+          if ! ls pushbot-pkg/*.ipk 1> /dev/null 2>&1; then
+            echo "错误: 未能在目录中找到下载的 .ipk 文件！"
+            exit 1
+          fi
 
       - name: Create install.sh script
         run: |
@@ -64,10 +81,10 @@ jobs:
 
       - name: Build run file with makeself
         run: |
+          # 将工作目录转移到 makeself 中进行打包
           mv pushbot-pkg makeself/
           cd makeself
-          # 打包为特定名称的 .run 执行文件，标明是 ipk 专用
-          ./makeself.sh pushbot-pkg/ pushbot-installer-ipk-${{ env.version }}.run "PushBot IPK Auto Installer by GitHub Actions" ./install.sh
+          ./makeself.sh pushbot-pkg/ pushbot-installer-ipk-${{ env.version }}.run "PushBot IPK Auto Installer" ./install.sh
       
       - name: Set tag name
         id: vars
@@ -88,7 +105,3 @@ jobs:
             </p>
             
             **插件版本**: `${{ env.version }}`
-            
-            ### 📝 更新说明
-            - 自动从 `zzsj0928/luci-app-pushbot` 同步最新版本打包。
-            - **此版本为纯 `IPK` 格式专用**，仅适用于保留了 `opkg` 包管理器的固件（如 OpenWrt 23.05 及以下，或部分自定义编译的 24 版本）。
