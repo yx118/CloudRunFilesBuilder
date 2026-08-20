@@ -23,26 +23,28 @@ jobs:
       - name: Create working directory
         run: mkdir -p pushbot-pkg
         
-      - name: Fetch Latest PushBot IPK Package
+      - name: Fetch PushBot IPK Package from Releases
         id: fetch_release
         run: |
-          API_URL="https://api.github.com/repos/zzsj0928/luci-app-pushbot/releases/latest"
+          # 获取前 5 个 Releases 列表，寻找包含 IPK 的版本
+          API_URL="https://api.github.com/repos/zzsj0928/luci-app-pushbot/releases?per_page=5"
           
-          # 获取 API 响应
           RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $API_URL)
           
-          # 提取版本号用于后续命名
-          VERSION=$(echo "$RESPONSE" | jq -r '.tag_name')
-          echo "version=$VERSION" >> $GITHUB_ENV
-          echo "获取到的最新 Tag: $VERSION"
-
-          # 精准提取所有以 .ipk 结尾的直链下载地址
-          DOWNLOAD_URLS=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url')
+          # 使用 jq 遍历 releases，找到第一个资产中包含 .ipk 文件的 release
+          TARGET_RELEASE=$(echo "$RESPONSE" | jq -c 'map(select(.assets[].name | endswith(".ipk"))) | .[0]')
           
-          if [ -z "$DOWNLOAD_URLS" ]; then
-            echo "错误: 在最新 Release 中未找到任何 .ipk 文件！"
+          if [ -z "$TARGET_RELEASE" ] || [ "$TARGET_RELEASE" = "null" ]; then
+            echo "错误: 在最近的 Releases 中未找到任何包含 .ipk 文件的版本！"
             exit 1
           fi
+
+          VERSION=$(echo "$TARGET_RELEASE" | jq -r '.tag_name')
+          echo "version=$VERSION" >> $GITHUB_ENV
+          echo "成功定位到包含 IPK 的 Tag: $VERSION"
+
+          # 提取该 Release 下所有以 .ipk 结尾的直链下载地址
+          DOWNLOAD_URLS=$(echo "$TARGET_RELEASE" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url')
 
           # 下载所有匹配的 .ipk 文件
           for url in $DOWNLOAD_URLS; do
@@ -59,7 +61,6 @@ jobs:
 
       - name: Create install.sh script
         run: |
-          # 编写仅针对 opkg 环境的安装脚本
           cat << 'EOF' > pushbot-pkg/install.sh
           #!/bin/sh
           echo "开始安装 PushBot (IPK版本)..."
@@ -81,7 +82,6 @@ jobs:
 
       - name: Build run file with makeself
         run: |
-          # 将工作目录转移到 makeself 中进行打包
           mv pushbot-pkg makeself/
           cd makeself
           ./makeself.sh pushbot-pkg/ pushbot-installer-ipk-${{ env.version }}.run "PushBot IPK Auto Installer" ./install.sh
