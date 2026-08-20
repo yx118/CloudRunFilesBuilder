@@ -1,0 +1,99 @@
+#=================================================
+# Description: Build RunFiles using GitHub Actions for PushBot
+# License: MIT
+#=================================================
+
+name: Build PushBot RunFile
+
+on:
+  schedule:
+    - cron: "10 22 * * *"  # 北京时间早上 6 点 10 分
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Create working directory
+        run: mkdir -p pushbot-pkg
+        
+      - name: Fetch Latest PushBot Package
+        id: fetch_release
+        run: |
+          # 通过 GitHub API 自动获取 zzsj0928/luci-app-pushbot 最新 Release 中的 apk 或 ipk 文件
+          API_URL="https://api.github.com/repos/zzsj0928/luci-app-pushbot/releases/latest"
+          DOWNLOAD_URLS=$(curl -s $API_URL | jq -r '.assets[] | select(.name | endswith(".apk") or endswith(".ipk")) | .browser_download_url')
+          
+          if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "错误: 在最新 Release 中未找到 .apk 或 .ipk 文件！"
+            exit 1
+          fi
+
+          # 下载所有匹配的安装包
+          for url in $DOWNLOAD_URLS; do
+            echo "Downloading $url ..."
+            wget -q -P pushbot-pkg/ "$url"
+          done
+          
+          # 提取版本号用于后续命名
+          VERSION=$(curl -s $API_URL | jq -r '.tag_name')
+          echo "version=$VERSION" >> $GITHUB_ENV
+
+      - name: Create install.sh script
+        run: |
+          # 编写智能安装脚本，自动识别 apk (新版 ImmortalWrt) 或 opkg (传统 OpenWrt)
+          cat << 'EOF' > pushbot-pkg/install.sh
+          #!/bin/sh
+          echo "开始安装 PushBot..."
+          
+          if command -v apk >/dev/null 2>&1; then
+              echo "检测到 apk 包管理器 (ImmortalWrt 24+)..."
+              apk update || echo "刷新软件源失败，尝试直接安装..."
+              apk add --allow-untrusted *.apk || exit 1
+          elif command -v opkg >/dev/null 2>&1; then
+              echo "检测到 opkg 包管理器 (OpenWrt)..."
+              opkg update || echo "刷新软件源失败，尝试直接安装..."
+              opkg install *.ipk || exit 1
+          else
+              echo "错误: 未找到 apk 或 opkg 包管理器！"
+              exit 1
+          fi
+          
+          echo "PushBot 安装/更新成功！"
+          EOF
+          chmod +x pushbot-pkg/install.sh
+
+      - name: Clone makeself repository
+        run: git clone https://github.com/megastep/makeself.git
+
+      - name: Build run file with makeself
+        run: |
+          mv pushbot-pkg makeself/
+          cd makeself
+          # 打包为通用架构的 .run 执行文件
+          ./makeself.sh pushbot-pkg/ pushbot-installer-${{ env.version }}.run "PushBot Auto Installer by GitHub Actions" ./install.sh
+      
+      - name: Set tag name
+        id: vars
+        run: |
+          TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
+          echo "tag_name=$TODAY" >> $GITHUB_ENV
+
+      - name: Upload run files as release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.tag_name }}
+          name: "Daily Build - ${{ env.tag_name }}"
+          files: makeself/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            <p align="left">
+             <img src="https://img.shields.io/github/downloads/${{ github.repository }}/${{ env.tag_name }}/total?style=for-the-badge&label=%E4%BB%8A%E6%97%A5%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&labelColor=blue&color=black"/>
+            </p>
+            
+            **插件版本**: `${{ env.version }}`
+            
+            ### 📝 更新说明
+            - 自动从 `zzsj0928/luci-app-pushbot` 同步最新版本打包。
+            - 脚本已支持自动识别并适配 `opkg` (传统 OpenWrt) 与 `apk` (新版 ImmortalWrt 24.10+) 环境。
