@@ -1,0 +1,94 @@
+#=================================================
+# Description: Build RunFiles using GitHub Actions for PushBot (IPK Version)
+# License: MIT
+#=================================================
+
+name: Build PushBot RunFile (IPK)
+
+on:
+  schedule:
+    - cron: "10 22 * * *"  # 北京时间早上 6 点 10 分
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Create working directory
+        run: mkdir -p pushbot-pkg
+        
+      - name: Fetch Latest PushBot IPK Package
+        id: fetch_release
+        run: |
+          # 通过 GitHub API 自动获取最新 Release 中仅以 .ipk 结尾的文件
+          API_URL="https://api.github.com/repos/zzsj0928/luci-app-pushbot/releases/latest"
+          DOWNLOAD_URLS=$(curl -s $API_URL | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url')
+          
+          if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "错误: 在最新 Release 中未找到 .ipk 文件！"
+            exit 1
+          fi
+
+          # 下载所有的 .ipk 安装包（包括主程序包和可能的 i18n 语言包）
+          for url in $DOWNLOAD_URLS; do
+            echo "Downloading $url ..."
+            wget -q -P pushbot-pkg/ "$url"
+          done
+          
+          # 提取版本号用于后续命名
+          VERSION=$(curl -s $API_URL | jq -r '.tag_name')
+          echo "version=$VERSION" >> $GITHUB_ENV
+
+      - name: Create install.sh script
+        run: |
+          # 编写仅针对 opkg 环境的安装脚本
+          cat << 'EOF' > pushbot-pkg/install.sh
+          #!/bin/sh
+          echo "开始安装 PushBot (IPK版本)..."
+          
+          if ! command -v opkg >/dev/null 2>&1; then
+              echo "错误: 当前系统未找到 opkg 包管理器！此安装包仅适用于传统 OpenWrt 架构。"
+              exit 1
+          fi
+          
+          opkg update || echo "刷新软件源失败，尝试直接离线安装..."
+          opkg install *.ipk || exit 1
+          
+          echo "PushBot (IPK版本) 安装/更新成功！"
+          EOF
+          chmod +x pushbot-pkg/install.sh
+
+      - name: Clone makeself repository
+        run: git clone https://github.com/megastep/makeself.git
+
+      - name: Build run file with makeself
+        run: |
+          mv pushbot-pkg makeself/
+          cd makeself
+          # 打包为特定名称的 .run 执行文件，标明是 ipk 专用
+          ./makeself.sh pushbot-pkg/ pushbot-installer-ipk-${{ env.version }}.run "PushBot IPK Auto Installer by GitHub Actions" ./install.sh
+      
+      - name: Set tag name
+        id: vars
+        run: |
+          TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
+          echo "tag_name=$TODAY" >> $GITHUB_ENV
+
+      - name: Upload run files as release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.tag_name }}
+          name: "Daily Build - ${{ env.tag_name }}"
+          files: makeself/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            <p align="left">
+             <img src="https://img.shields.io/github/downloads/${{ github.repository }}/${{ env.tag_name }}/total?style=for-the-badge&label=%E4%BB%8A%E6%97%A5%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&labelColor=blue&color=black"/>
+            </p>
+            
+            **插件版本**: `${{ env.version }}`
+            
+            ### 📝 更新说明
+            - 自动从 `zzsj0928/luci-app-pushbot` 同步最新版本打包。
+            - **此版本为纯 `IPK` 格式专用**，仅适用于保留了 `opkg` 包管理器的固件（如 OpenWrt 23.05 及以下，或部分自定义编译的 24 版本）。
