@@ -12,8 +12,8 @@ on:
 
 env:
   # 在此处定义你需要的 CPU 架构，空格分隔
-  # 常见架构：x86_64, aarch64_cortex-a53, aarch64_generic, mipsel_24kc 等
   TARGET_ARCHS: "x86_64 aarch64_cortex-a53"
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build:
@@ -32,69 +32,86 @@ jobs:
         id: fetch_release
         run: |
           API_URL="https://api.github.com/repos/EasyTier/luci-app-easytier/releases/latest"
-          VERSION=$(curl -s $API_URL | jq -r '.tag_name')
+          # 使用 Token 防止请求超限导致获取不到数据
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $API_URL)
+          
+          VERSION=$(echo "$RESPONSE" | jq -r '.tag_name')
           echo "version=$VERSION" >> $GITHUB_ENV
+          echo "最新版本为: $VERSION"
           
           cd easytier-workdir
           
           for ARCH in $TARGET_ARCHS; do
-            echo "正在处理架构: $ARCH ..."
+            echo "========================================="
+            echo "开始处理架构: $ARCH"
             mkdir -p $ARCH-ipk $ARCH-apk
             
-            # 获取 IPK 版本的 zip 下载链接 (包含 22.03 字样)
-            IPK_ZIP_URL=$(curl -s $API_URL | jq -r ".assets[] | select(.name | contains(\"$ARCH\") and contains(\"22.03\")) | .browser_download_url")
-            # 获取 APK 版本的 zip 下载链接 (包含 SNAPSHOT 字样)
-            APK_ZIP_URL=$(curl -s $API_URL | jq -r ".assets[] | select(.name | contains(\"$ARCH\") and contains(\"SNAPSHOT\")) | .browser_download_url")
+            # 抓取包含该架构，并且是 ipk/apk 或对应 zip 的所有链接
+            IPK_URLS=$(echo "$RESPONSE" | jq -r ".assets[] | select((.name | contains(\"$ARCH\") or contains(\"all\")) and (.name | endswith(\".ipk\") or (endswith(\".zip\") and contains(\"22.03\")))) | .browser_download_url")
+            APK_URLS=$(echo "$RESPONSE" | jq -r ".assets[] | select((.name | contains(\"$ARCH\") or contains(\"all\")) and (.name | endswith(\".apk\") or (endswith(\".zip\") and contains(\"SNAPSHOT\")))) | .browser_download_url")
             
-            # 下载并解压 IPK 包
-            if [ -n "$IPK_ZIP_URL" ]; then
-              echo "Downloading IPK zip: $IPK_ZIP_URL"
-              wget -q -O $ARCH-ipk.zip "$IPK_ZIP_URL"
-              unzip -q $ARCH-ipk.zip -d $ARCH-ipk/
-              rm -f $ARCH-ipk.zip
+            # 智能下载与处理 IPK
+            if [ -n "$IPK_URLS" ]; then
+              for url in $IPK_URLS; do
+                filename=$(basename "$url")
+                echo "下载 IPK 相关文件: $filename"
+                wget -q -O "$ARCH-ipk/$filename" "$url"
+                
+                # 如果是 zip，则解压并删除原 zip
+                if [[ "$filename" == *.zip ]]; then
+                  unzip -q -o "$ARCH-ipk/$filename" -d "$ARCH-ipk/"
+                  rm -f "$ARCH-ipk/$filename"
+                fi
+              done
             else
-              echo "警告: 未找到 $ARCH 的 IPK 压缩包！"
+              echo "警告: 未找到 $ARCH 的 IPK 文件！"
             fi
             
-            # 下载并解压 APK 包
-            if [ -n "$APK_ZIP_URL" ]; then
-              echo "Downloading APK zip: $APK_ZIP_URL"
-              wget -q -O $ARCH-apk.zip "$APK_ZIP_URL"
-              unzip -q $ARCH-apk.zip -d $ARCH-apk/
-              rm -f $ARCH-apk.zip
+            # 智能下载与处理 APK
+            if [ -n "$APK_URLS" ]; then
+              for url in $APK_URLS; do
+                filename=$(basename "$url")
+                echo "下载 APK 相关文件: $filename"
+                wget -q -O "$ARCH-apk/$filename" "$url"
+                
+                # 如果是 zip，则解压并删除原 zip
+                if [[ "$filename" == *.zip ]]; then
+                  unzip -q -o "$ARCH-apk/$filename" -d "$ARCH-apk/"
+                  rm -f "$ARCH-apk/$filename"
+                fi
+              done
             else
-              echo "警告: 未找到 $ARCH 的 APK 压缩包！"
+              echo "警告: 未找到 $ARCH 的 APK 文件！"
             fi
           done
 
       - name: Create install scripts
         run: |
           cd easytier-workdir
-          
           for ARCH in $TARGET_ARCHS; do
-            # 给 IPK 目录写入 opkg 安装脚本
-            if [ -d "$ARCH-ipk" ] && [ "$(ls -A $ARCH-ipk)" ]; then
+            # 检查是否有实际下载到 .ipk
+            if ls $ARCH-ipk/*.ipk 1> /dev/null 2>&1; then
               cat << 'EOF' > $ARCH-ipk/install.sh
           #!/bin/sh
           echo "开始安装 EasyTier (IPK / OpenWrt 24及更早版本)..."
           if ! command -v opkg >/dev/null 2>&1; then
-              echo "错误: 未找到 opkg！此安装包仅适用传统架构固件。"
+              echo "错误: 未找到 opkg！此包仅适用传统架构固件。"
               exit 1
           fi
-          opkg update || echo "刷新软件源失败，尝试直接离线安装..."
+          opkg update || echo "刷新软件源失败，尝试直接安装..."
           opkg install *.ipk || exit 1
           echo "EasyTier (IPK) 安装成功！"
           EOF
               chmod +x $ARCH-ipk/install.sh
             fi
 
-            # 给 APK 目录写入 apk 安装脚本
-            if [ -d "$ARCH-apk" ] && [ "$(ls -A $ARCH-apk)" ]; then
+            # 检查是否有实际下载到 .apk
+            if ls $ARCH-apk/*.apk 1> /dev/null 2>&1; then
               cat << 'EOF' > $ARCH-apk/install.sh
           #!/bin/sh
-          echo "开始安装 EasyTier (APK / OpenWrt 25+ / ImmortalWrt 24.10+)..."
+          echo "开始安装 EasyTier (APK / OpenWrt 25+)..."
           if ! command -v apk >/dev/null 2>&1; then
-              echo "错误: 未找到 apk！此安装包仅适用新版固件环境。"
+              echo "错误: 未找到 apk！此包仅适用新版固件环境。"
               exit 1
           fi
           apk update || echo "刷新软件源失败，尝试直接安装..."
@@ -111,15 +128,11 @@ jobs:
       - name: Build run files with makeself
         run: |
           cd easytier-workdir
-          
           for ARCH in $TARGET_ARCHS; do
-            # 打包 IPK 安装器 (适用于 OpenWrt 24)
-            if [ -d "$ARCH-ipk" ] && [ -f "$ARCH-ipk/install.sh" ]; then
+            if [ -f "$ARCH-ipk/install.sh" ]; then
               ../makeself/makeself.sh $ARCH-ipk/ ../easytier-installer-openwrt24-ipk-$ARCH-${{ env.version }}.run "EasyTier IPK Installer ($ARCH)" ./install.sh
             fi
-            
-            # 打包 APK 安装器 (适用于 OpenWrt 25)
-            if [ -d "$ARCH-apk" ] && [ -f "$ARCH-apk/install.sh" ]; then
+            if [ -f "$ARCH-apk/install.sh" ]; then
               ../makeself/makeself.sh $ARCH-apk/ ../easytier-installer-openwrt25-apk-$ARCH-${{ env.version }}.run "EasyTier APK Installer ($ARCH)" ./install.sh
             fi
           done
@@ -143,9 +156,3 @@ jobs:
             </p>
             
             **EasyTier 插件版本**: `${{ env.version }}`
-            
-            ### 📦 文件说明
-            * `*-openwrt24-ipk-*.run`：适用于 OpenWrt 24 及更老版本 (基于 `opkg`)
-            * `*-openwrt25-apk-*.run`：适用于 OpenWrt 25 / ImmortalWrt 24.10+ (基于 `apk`)
-            
-            自动从 [EasyTier/luci-app-easytier](https://github.com/EasyTier/luci-app-easytier) 拉取并构建。
